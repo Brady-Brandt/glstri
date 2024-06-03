@@ -399,14 +399,152 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
 
 
 
+typedef enum {
+    VARIABLE = 0,
+    OPTIONS_LEN = 1,
+} OptionType;
+
+typedef struct{
+    bool isEnabled;
+    char* arg;
+} Option;
+
+
+typedef struct {
+    Option opts[OPTIONS_LEN];
+} Options;
+
+
+#define is_option_set(options, opt) (options.opts[opt].isEnabled)
+
+#define get_option_arg(options, opt) (options.opts[opt].arg)
+
+
+typedef struct {
+    Option* array[OPTIONS_LEN];
+    int front;
+    int rear;
+} OptionQueue;
+
+
+// Function to create an empty queue
+void create_queue(OptionQueue* queue) {
+    queue->front = -1;
+    queue->rear = -1;
+}
+
+// Function to check if the queue is full
+bool is_full(OptionQueue* queue) {
+    return (queue->rear == OPTIONS_LEN - 1);
+}
+
+// Function to check if the queue is empty
+bool is_empty(OptionQueue* queue) {
+    return (queue->front == -1 && queue->rear == -1);
+}
+
+// Function to enqueue an element to the queue
+void enqueue(OptionQueue* queue, Option* data) {
+    if (is_full(queue)) {
+        printf("Queue is full. Cannot enqueue.\n");
+        return;
+    }
+
+    if (is_empty(queue))
+        queue->front = queue->rear = 0;
+    else
+        queue->rear++;
+
+    queue->array[queue->rear] = data;
+}
+
+// Function to dequeue an element from the queue
+Option* dequeue(OptionQueue* queue) {
+    if (is_empty(queue)) {
+        printf("Queue is empty. Cannot dequeue.\n");
+        return NULL;
+    }
+    Option* data = queue->array[queue->front];
+    if (queue->front == queue->rear)
+        queue->front = queue->rear = -1;
+    else
+        queue->front++;
+
+    return data;
+}
+
+
+
+void get_options(int argc, char**argv, Options* ops){
+       
+    //this queue holds option arguements 
+    OptionQueue arg_queue;
+    create_queue(&arg_queue);
+
+    int arg_size = 0;
+    //last 2 args should be the files 
+    for(int i = 1; i < argc - 2; i++){
+        char* opt = argv[i];
+        int opt_len = strlen(opt);
+
+        //options start with - 
+        if(opt[0] != '-'){
+            //if it doesn't start with dash check if it is an option arguement 
+            if(!is_empty(&arg_queue)){
+                Option* current_opt = dequeue(&arg_queue);
+                current_opt->arg = opt;
+                continue;
+            } else {
+                fprintf(stderr, "Invalid arguement: %s\n", opt);
+                exit(4);
+            }
+        }  
+        for(int j = 1; j < opt_len; j++){
+            char c = opt[j];
+            Option current_opt;
+            switch (c) {
+                case 'v':
+                case 'V':
+                    ops->opts[VARIABLE] = (Option){true, NULL}; 
+                    enqueue(&arg_queue, &ops->opts[VARIABLE]);
+                    break;
+                default:
+                    fprintf(stderr, "Invalid arguement option: %c\n", c);
+                    exit(4);
+            }
+            arg_size++;
+        }
+    }
+
+    if(!is_empty(&arg_queue)){
+        fprintf(stderr, "Not enough arguements entered\n");
+        exit(4);
+    }
+}
+
+
+
 int main(int argc, char** argv){
     if(argc < 3){
         printf("Error: Invalid arguement count\n");
-        return 1;
+        printf("Default Usage: ./glstri input_file output_file\n");
+        return 4;
     }
- 
-    char* input_file_name = argv[1];
-    char* output_file_name = argv[2];
+
+    char *input_file_name, *output_file_name;
+
+    Options options;
+    memset(&options, 0, sizeof(Options));
+
+    //default you just enter two files
+    if(argc == 3){
+        input_file_name = argv[1];
+        output_file_name = argv[2];
+    } else {
+        get_options(argc, argv, &options);
+        input_file_name = argv[argc - 2];
+        output_file_name = argv[argc - 1];
+    }
 
     printf("%s -> %s\n", input_file_name, output_file_name);
     File input_file = open_file(input_file_name,"r");
@@ -425,16 +563,22 @@ int main(int argc, char** argv){
     //the name of the input file is going to be the name of the variable that stores the data
     int input_len = strlen(input_file_name);
 
-    //remove the file extension if there is one
-    int end = input_len;
-    for(int i = input_len - 1; i > 0; i--){
-        if(input_file_name[i] == '.'){
-            input_file_name[i] = '\0';
-            break;
+    char* variable_name = NULL;
+
+    if(is_option_set(options, VARIABLE)){
+        variable_name = get_option_arg(options, VARIABLE);
+    } else {
+        //remove the file extension if there is one
+        int end = input_len;
+        for(int i = input_len - 1; i > 0; i--){
+            if(input_file_name[i] == '.'){
+                input_file_name[i] = '\0';
+                break;
+            }
         }
+        variable_name = input_file_name;
     }
 
-    char* variable_name = input_file_name;
 
     if(output_exists){
         write_to_existing_file(&input_file, &output_file, variable_name);
