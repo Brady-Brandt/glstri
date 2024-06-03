@@ -155,7 +155,6 @@ void write_lines(FILE* input_stream, FILE* output_stream, const char* variable_n
     while(true){
         get_line(input_stream, &line, false);
         if(line.size > 0){
-            printf("%s\n", line.data);
             int items = fprintf(output_stream, "\n    \"%s\\n\"", line.data);
         }
         if(line.endOfFile){
@@ -221,15 +220,17 @@ bool isDiff(FILE* input_stream, FILE* output_stream, FILE* temp){
                 if(temp == NULL) break;
             } else {
                 output = output_line.data; 
-            }
-
-            
+            }    
             if(temp != NULL){
                 if(first_line){
                     first_line = false;
                     fprintf(temp, "    \"%s\\n\"", output); 
                 } else {
                     fprintf(temp, "\n    \"%s\\n\"", output); 
+                }
+                //print out the differences between files
+                if(output != output_line.data){
+                    printf("%s ---> %s\n", output_line.data, output);
                 }
             }
             reset_line(&input_line);
@@ -274,17 +275,51 @@ void write_until_pos(FILE* input_stream, FILE* output_stream, long pos){
 void write_to_existing_file(File* input_file, File* output_file, const char* variable_name){
     const int BUFF_SIZE = 512;
     char buffer[BUFF_SIZE];
-
     bool found_occurrence = false;
+    Line line;
+    new_line(&line);
 
     //check if variable_name already exists in the output file
-    while(fgets(buffer, BUFF_SIZE, output_file->stream) != NULL){
-        if(strstr(buffer, variable_name) != NULL){
-            found_occurrence = true;
-            break;
-        }
+    bool multi_comment = false;
+    while(!found_occurrence){
+        get_line(output_file->stream, &line, false);
+        if(line.endOfFile) break;
+        char* token = strtok(line.data," \t"); 
+        //need to tokenize to get rid of comments 
+        while(token != NULL){
+            if(!multi_comment){
+                if(strstr(token, "/*") != NULL){
+                    multi_comment = true;
+                } else if(strstr(token, "//") != NULL){
+                    //go to the next line if we find a single line comment 
+                    break;
+                } else {
+                    //makes it easier to compare an array to our value 
+                    //const char fragment[] == fragment 
+                    int tk_len = strlen(token);
+                    for(int i = 0; i < tk_len; i++){
+                        if(token[i] == '[' || token[i] == '='){
+                            token[i] = 0;
+                            break;
+                        }
+                    }
+                    //const char *frag == frag
+                    if(token[0] == '*') token++;
+                    if(strcmp(token, variable_name) == 0){
+                        found_occurrence = true;
+                        break;
+                    }
+                }
+            }
+            if(multi_comment && strstr(token, "*/")){
+                multi_comment = false;
+            } 
+            token = strtok(NULL, " \t");
+        } 
+        reset_line(&line); 
     }
 
+    delete_line(&line);
 
     //create a temp file to store the current files data
     FILE* temp = tmpfile();
@@ -296,11 +331,16 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         //output file start at the first line of the shader code 
         long shader_code_pos = ftell(output_file->stream);
         if(!isDiff(input_file->stream, output_file->stream, NULL)){
+            printf("Found no difference between shader code!");
             return;
         }
+
+
         //copying all the code before the shader code to the temp file 
+        rewind(output_file->stream);
         write_until_pos(output_file->stream, temp, shader_code_pos);
 
+        
         //write the shader code
         rewind(input_file->stream);
         isDiff(input_file->stream, output_file->stream, temp);
@@ -311,15 +351,22 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         Line current_line;
         new_line(&current_line);
 
-        int line_len = 0;
         //trying to find a good stop for the shader code 
-
         long shader_code_pos = ftell(output_file->stream);
+        bool inside_comment = false;
         while(true){
             shader_code_pos = ftell(output_file->stream);
             get_line(output_file->stream, &current_line, false);
+            //don't want to place it inside a multi line comment on accident
+            if(strstr(current_line.data, "/*") != NULL){
+                inside_comment = true;
+            } 
+            if(inside_comment && strstr(current_line.data, "*/") != NULL){
+                inside_comment = false;
+            }
+
             if(current_line.endOfFile) break;
-            if(current_line.size != 0 && isalpha(current_line.data[0])){
+            if(!inside_comment && current_line.size != 0 && isalpha(current_line.data[0])){
                 break;
             }     
             reset_line(&current_line);
@@ -328,6 +375,7 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         delete_line(&current_line);
 
         rewind(output_file->stream);
+        
         write_until_pos(output_file->stream, temp, shader_code_pos);
        
         //copy shader code to temp file 
