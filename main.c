@@ -136,8 +136,6 @@ void get_line(FILE* stream, Line* line, bool is_formatted){
                break;
             }
         }
-
-
         line->data[line->size++] = c;
         prev = c;
     }
@@ -168,6 +166,57 @@ void write_lines(FILE* input_stream, FILE* output_stream, const char* variable_n
 
 
 
+
+bool remove_comments(Line* line, bool multi_line_comment){
+    if(line->size < 2){
+        return false;
+    }
+    char* single_line_comment = strstr(line->data, "//");
+
+    if(single_line_comment != NULL){
+       int comment_start = single_line_comment - line->data; 
+       line->data[comment_start] = 0;
+       line->size = comment_start;
+       return false;
+    }
+
+    
+    if(!multi_line_comment){
+        char* multi_line_start = strstr(line->data, "/*");
+        if(multi_line_start != NULL){
+            int comment_start = multi_line_start - line->data;
+            line->data[comment_start] = 0;
+            line->size = comment_start;
+            multi_line_comment = true;
+        }
+    }
+
+    //check for end of multi line comment
+    if(multi_line_comment){
+        char* multi_line_end = strstr(line->data, "*/");
+        if(multi_line_end != NULL){
+            multi_line_end += 2;
+            int line_len = strlen(multi_line_end);
+            if(line_len < 1){
+                line->data[0] = 0;
+                line->size = 0;
+            } else {
+                memmove(line->data, multi_line_end, line_len);
+                line->data[line_len + 1] = 0;
+                line->size = line_len;
+            }
+            multi_line_comment = false;
+        } else {
+            line->data[0] = 0;
+            line->size = 0;
+        }
+
+    }
+
+    return multi_line_comment;
+}
+
+
 //returns whether there is a difference between input_file and output 
 //at least for the shader code wise
 //if temp != null, write the output to the temp file 
@@ -183,16 +232,33 @@ bool isDiff(FILE* input_stream, FILE* output_stream, FILE* temp){
         bool result = false;
         bool end_of_input = false;
         bool end_of_output = false;
+
+        bool input_multi_comment = false;
+        bool output_multi_comment = false;
+
+        bool is_blank_line = false;
         while(true){
             if(!end_of_input) get_line(input_stream, &input_line, false); 
-            if(!end_of_output) get_line(output_stream, &output_line, true); 
+            if(!end_of_output && !is_blank_line) get_line(output_stream, &output_line, true); 
+            
 
-            if(input_line.endOfFile){
-                end_of_input = true;
-            }
+            is_blank_line = false;
+
+            input_multi_comment = remove_comments(&input_line, input_multi_comment);
+            output_multi_comment = remove_comments(&output_line, output_multi_comment);
 
             if(output_line.endOfFile){
                 end_of_output = true;
+            }
+
+            if(input_line.endOfFile){
+                if(!end_of_output){
+                    result = true;
+                    if(temp == NULL) break;
+                    reset_line(&output_line);
+                    continue;
+                }
+                end_of_input = true;
             }
 
             if(end_of_input && end_of_output) break;
@@ -204,9 +270,7 @@ bool isDiff(FILE* input_stream, FILE* output_stream, FILE* temp){
 
             //skip over blank lines in input file
             if(input_line.size == 0 && output_line.size != 0){
-                result = true;
-                if(temp == NULL) break;
-                reset_line(&output_line);
+                is_blank_line = true;
                 continue;
             }
            
@@ -229,7 +293,10 @@ bool isDiff(FILE* input_stream, FILE* output_stream, FILE* temp){
                     fprintf(temp, "\n    \"%s\\n\"", output); 
                 }
                 //print out the differences between files
-                if(output != output_line.data){
+                if(end_of_output){
+                    printf(" ---> %s\n", output);
+                }
+                else if(output != output_line.data){
                     printf("%s ---> %s\n", output_line.data, output);
                 }
             }
@@ -272,62 +339,67 @@ void write_until_pos(FILE* input_stream, FILE* output_stream, long pos){
 
 
 
-void write_to_existing_file(File* input_file, File* output_file, const char* variable_name){
-    const int BUFF_SIZE = 512;
-    char buffer[BUFF_SIZE];
-    bool found_occurrence = false;
+
+//checks if the variable exists in the file
+bool contains_variable(File* output_file, const char* variable){
     Line line;
     new_line(&line);
+    bool multi_line_comment = false;
 
-    //check if variable_name already exists in the output file
-    bool multi_comment = false;
-    while(!found_occurrence){
+    bool result = false;
+
+    bool before_is_clear;
+    while(true){
+        before_is_clear = false;            
         get_line(output_file->stream, &line, false);
         if(line.endOfFile) break;
-        char* token = strtok(line.data," \t"); 
-        //need to tokenize to get rid of comments 
-        while(token != NULL){
-            if(!multi_comment){
-                if(strstr(token, "/*") != NULL){
-                    multi_comment = true;
-                } else if(strstr(token, "//") != NULL){
-                    //go to the next line if we find a single line comment 
-                    break;
-                } else {
-                    //makes it easier to compare an array to our value 
-                    //const char fragment[] == fragment 
-                    int tk_len = strlen(token);
-                    for(int i = 0; i < tk_len; i++){
-                        if(token[i] == '[' || token[i] == '='){
-                            token[i] = 0;
-                            break;
-                        }
-                    }
-                    //const char *frag == frag
-                    if(token[0] == '*') token++;
-                    if(strcmp(token, variable_name) == 0){
-                        found_occurrence = true;
-                        break;
-                    }
-                }
+        multi_line_comment = remove_comments(&line, multi_line_comment);
+        char* variable_start = strstr(line.data,variable);
+        if(variable_start == NULL){
+            reset_line(&line);
+            continue;
+        }
+        
+        if(variable_start > line.data){
+            int variable_index = variable_start - line.data;
+            int char_before_var = line.data[variable_index - 1];
+
+            if(char_before_var == ' ' || char_before_var == '*' || char_before_var == '\t'){
+                before_is_clear = true;
             }
-            if(multi_comment && strstr(token, "*/")){
-                multi_comment = false;
-            } 
-            token = strtok(NULL, " \t");
-        } 
+        }
+
+        if(before_is_clear || variable_start == line.data){
+            int var_len = strlen(variable);
+            int var_index = variable_start - line.data;
+            if(var_len + var_index == line.size){
+                result = true;
+                break;
+            }
+
+            int char_after_var = line.data[var_index + var_len];
+            if(char_after_var == ' ' || char_after_var == '=' || char_after_var == '[' || char_after_var == '\t'){
+                result = true;
+                break;
+            }
+        }
+                               
         reset_line(&line); 
     }
-
     delete_line(&line);
+    return result;
+}
 
+
+
+void write_to_existing_file(File* input_file, File* output_file, const char* variable_name){ 
     //create a temp file to store the current files data
     FILE* temp = tmpfile();
     if(temp == NULL){
         perror("Failed to create a temp file\n");
         exit(1);
     }
-    if(found_occurrence){
+    if(contains_variable(output_file, variable_name)){
         //output file start at the first line of the shader code 
         long shader_code_pos = ftell(output_file->stream);
         if(!isDiff(input_file->stream, output_file->stream, NULL)){
@@ -382,6 +454,8 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         write_lines(input_file->stream, temp, variable_name);
     }
 
+    const int BUFF_SIZE = 512;
+    char buffer[BUFF_SIZE];
     //writes all the stuff after the shader to a temp file 
     while(fgets(buffer, BUFF_SIZE, output_file->stream) != NULL){ 
         fwrite(buffer, sizeof(char), strlen(buffer), temp);
@@ -481,7 +555,6 @@ void get_options(int argc, char**argv, Options* ops){
     OptionQueue arg_queue;
     create_queue(&arg_queue);
 
-    int arg_size = 0;
     //last 2 args should be the files 
     for(int i = 1; i < argc - 2; i++){
         char* opt = argv[i];
@@ -501,7 +574,6 @@ void get_options(int argc, char**argv, Options* ops){
         }  
         for(int j = 1; j < opt_len; j++){
             char c = opt[j];
-            Option current_opt;
             switch (c) {
                 case 'v':
                 case 'V':
@@ -512,7 +584,6 @@ void get_options(int argc, char**argv, Options* ops){
                     fprintf(stderr, "Invalid arguement option: %c\n", c);
                     exit(4);
             }
-            arg_size++;
         }
     }
 
@@ -532,7 +603,6 @@ int main(int argc, char** argv){
     }
 
     char *input_file_name, *output_file_name;
-
     Options options;
     memset(&options, 0, sizeof(Options));
 
@@ -569,7 +639,6 @@ int main(int argc, char** argv){
         variable_name = get_option_arg(options, VARIABLE);
     } else {
         //remove the file extension if there is one
-        int end = input_len;
         for(int i = input_len - 1; i > 0; i--){
             if(input_file_name[i] == '.'){
                 input_file_name[i] = '\0';
