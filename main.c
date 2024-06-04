@@ -4,11 +4,64 @@
 #include <stdlib.h>
 #include <stdbool.h>
 
+
+
+
 typedef struct {
     const char* name;
     FILE* stream; 
     bool isOpen;
 } File;
+
+
+//holds a glsl or C line with unnecessary white space removed
+typedef struct {
+   int size;
+   char* data;
+   int capacity;
+   bool endOfFile;
+} Line;
+
+
+typedef enum {
+    VARIABLE = 0,
+    WARNINGS = 1,
+    SILENCE = 2,
+    FLAGS_LEN = 3,
+} FlagType;
+
+typedef struct{
+    bool isEnabled;
+    char* arg;
+} Flag;
+
+
+typedef struct {
+    Flag f[FLAGS_LEN];
+} Flags;
+
+
+//think this is better than having to pass around flags to every function 
+static Flags flags = {0};
+
+#define is_flag_set(flag) (flags.f[flag].isEnabled)
+#define get_flag_arg(flag) (flags.f[flag].arg)
+#define enable_flag(flag) (flags.f[flag] = (Flag){true, NULL})
+
+
+#define print_va(fmt, ...) if(!is_flag_set(SILENCE)) printf(fmt,__VA_ARGS__)
+#define print(str) if(!is_flag_set(SILENCE)) printf(str)
+
+
+#define warning(fmt, ...) if(is_flag_set(WARNINGS)) printf("WARNING: " fmt, __VA_ARGS__)
+
+typedef struct {
+    Flag* array[FLAGS_LEN];
+    int front;
+    int rear;
+} FlagQueue;
+
+
 
 
 //verifies that the output file is a valid C or header file
@@ -56,15 +109,6 @@ void close_file(File *f){
         f->isOpen = false;
     }
 }
-
-//holds a glsl or C line with unnecessary white space removed
-typedef struct {
-   int size;
-   char* data;
-   int capacity;
-   bool endOfFile;
-} Line;
-
 
 void new_line(Line* line){
     line->endOfFile = false;
@@ -147,7 +191,7 @@ void get_line(FILE* stream, Line* line, bool is_formatted){
 //copys the input file to the output file 
 //declares the glsl code with the variable variable_name
 void write_lines(FILE* input_stream, FILE* output_stream, const char* variable_name){
-    fprintf(output_stream, "\nconst char* %s=", variable_name);
+    fprintf(output_stream, "\nconst char* %s =", variable_name);
     Line line;
     new_line(&line);
     while(true){
@@ -215,6 +259,8 @@ bool remove_comments(Line* line, bool multi_line_comment){
 
     return multi_line_comment;
 }
+
+
 
 
 //returns whether there is a difference between input_file and output 
@@ -294,10 +340,10 @@ bool isDiff(FILE* input_stream, FILE* output_stream, FILE* temp){
                 }
                 //print out the differences between files
                 if(end_of_output){
-                    printf(" ---> %s\n", output);
+                    print_va(" ---> %s\n", output);
                 }
                 else if(output != output_line.data){
-                    printf("%s ---> %s\n", output_line.data, output);
+                    print_va("%s ---> %s\n", output_line.data, output);
                 }
             }
             reset_line(&input_line);
@@ -403,7 +449,7 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         //output file start at the first line of the shader code 
         long shader_code_pos = ftell(output_file->stream);
         if(!isDiff(input_file->stream, output_file->stream, NULL)){
-            printf("Found no difference between shader code!");
+            print("Found no difference between shader code!");
             return;
         }
 
@@ -412,6 +458,8 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
         rewind(output_file->stream);
         write_until_pos(output_file->stream, temp, shader_code_pos);
 
+
+        warning("Changing the definition of %s to the contents of %s\n", variable_name, input_file->name);
         
         //write the shader code
         rewind(input_file->stream);
@@ -473,52 +521,24 @@ void write_to_existing_file(File* input_file, File* output_file, const char* var
 
 
 
-typedef enum {
-    VARIABLE = 0,
-    OPTIONS_LEN = 1,
-} OptionType;
-
-typedef struct{
-    bool isEnabled;
-    char* arg;
-} Option;
-
-
-typedef struct {
-    Option opts[OPTIONS_LEN];
-} Options;
-
-
-#define is_option_set(options, opt) (options.opts[opt].isEnabled)
-
-#define get_option_arg(options, opt) (options.opts[opt].arg)
-
-
-typedef struct {
-    Option* array[OPTIONS_LEN];
-    int front;
-    int rear;
-} OptionQueue;
-
-
 // Function to create an empty queue
-void create_queue(OptionQueue* queue) {
+void create_queue(FlagQueue* queue) {
     queue->front = -1;
     queue->rear = -1;
 }
 
 // Function to check if the queue is full
-bool is_full(OptionQueue* queue) {
-    return (queue->rear == OPTIONS_LEN - 1);
+bool is_full(FlagQueue* queue) {
+    return (queue->rear == FLAGS_LEN - 1);
 }
 
 // Function to check if the queue is empty
-bool is_empty(OptionQueue* queue) {
+bool is_empty(FlagQueue* queue) {
     return (queue->front == -1 && queue->rear == -1);
 }
 
 // Function to enqueue an element to the queue
-void enqueue(OptionQueue* queue, Option* data) {
+void enqueue(FlagQueue* queue, Flag* data) {
     if (is_full(queue)) {
         printf("Queue is full. Cannot enqueue.\n");
         return;
@@ -533,12 +553,12 @@ void enqueue(OptionQueue* queue, Option* data) {
 }
 
 // Function to dequeue an element from the queue
-Option* dequeue(OptionQueue* queue) {
+Flag* dequeue(FlagQueue* queue) {
     if (is_empty(queue)) {
         printf("Queue is empty. Cannot dequeue.\n");
         return NULL;
     }
-    Option* data = queue->array[queue->front];
+    Flag* data = queue->array[queue->front];
     if (queue->front == queue->rear)
         queue->front = queue->rear = -1;
     else
@@ -549,39 +569,45 @@ Option* dequeue(OptionQueue* queue) {
 
 
 
-void get_options(int argc, char**argv, Options* ops){
-       
-    //this queue holds option arguements 
-    OptionQueue arg_queue;
+void get_flags(int argc, char**argv){ 
+    FlagQueue arg_queue;
     create_queue(&arg_queue);
 
     //last 2 args should be the files 
     for(int i = 1; i < argc - 2; i++){
-        char* opt = argv[i];
-        int opt_len = strlen(opt);
+        char* item = argv[i];
+        int opt_len = strlen(item);
 
-        //options start with - 
-        if(opt[0] != '-'){
-            //if it doesn't start with dash check if it is an option arguement 
+        //flags start with - 
+        if(item[0] != '-'){
+            //if it doesn't start with dash check if it is an Flag arguement 
             if(!is_empty(&arg_queue)){
-                Option* current_opt = dequeue(&arg_queue);
-                current_opt->arg = opt;
+                Flag* current_opt = dequeue(&arg_queue);
+                current_opt->arg = item;
                 continue;
             } else {
-                fprintf(stderr, "Invalid arguement: %s\n", opt);
+                fprintf(stderr, "Invalid flag type: %s\n", item);
                 exit(4);
             }
         }  
         for(int j = 1; j < opt_len; j++){
-            char c = opt[j];
-            switch (c) {
+            char c = item[j];
+            switch (tolower(c)) {
                 case 'v':
-                case 'V':
-                    ops->opts[VARIABLE] = (Option){true, NULL}; 
-                    enqueue(&arg_queue, &ops->opts[VARIABLE]);
+                    enable_flag(VARIABLE);
+                    enqueue(&arg_queue, &flags.f[VARIABLE]);
                     break;
+
+                case 'w':
+                    enable_flag(WARNINGS);
+                    break;
+
+                case 's':
+                    enable_flag(SILENCE);
+                    break;
+
                 default:
-                    fprintf(stderr, "Invalid arguement option: %c\n", c);
+                    fprintf(stderr, "Invalid flag: %c\n", c);
                     exit(4);
             }
         }
@@ -603,20 +629,18 @@ int main(int argc, char** argv){
     }
 
     char *input_file_name, *output_file_name;
-    Options options;
-    memset(&options, 0, sizeof(Options));
 
     //default you just enter two files
     if(argc == 3){
         input_file_name = argv[1];
         output_file_name = argv[2];
     } else {
-        get_options(argc, argv, &options);
+        get_flags(argc, argv);
         input_file_name = argv[argc - 2];
         output_file_name = argv[argc - 1];
     }
 
-    printf("%s -> %s\n", input_file_name, output_file_name);
+    print_va("%s -> %s\n", input_file_name, output_file_name);
     File input_file = open_file(input_file_name,"r");
 
     verify_ouput_file(output_file_name); 
@@ -635,8 +659,8 @@ int main(int argc, char** argv){
 
     char* variable_name = NULL;
 
-    if(is_option_set(options, VARIABLE)){
-        variable_name = get_option_arg(options, VARIABLE);
+    if(is_flag_set(VARIABLE)){
+        variable_name = get_flag_arg(VARIABLE);
     } else {
         //remove the file extension if there is one
         for(int i = input_len - 1; i > 0; i--){
