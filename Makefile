@@ -1,4 +1,4 @@
-CC = clang
+CC = cc 
 all: main.c
 	$(CC) -O3 main.c -o glstri
 
