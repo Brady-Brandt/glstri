@@ -568,6 +568,16 @@ Flag* dequeue(FlagQueue* queue) {
 }
 
 
+void help(){
+    printf("Enter flags and any flag arguements, along with two files\n");
+    printf("Current Possible flags include: \n");
+    printf("-s ---> Silences all output except warnings if they are enabled\n");
+    printf("-v ---> Takes a variable name that will be the name of a variable in the output file\n");
+    printf("-w ---> Enables warnings\n");
+    printf("*Note flags are not case sensitive\n");
+    exit(0);
+}
+
 
 void get_flags(int argc, char**argv){ 
     FlagQueue arg_queue;
@@ -577,6 +587,10 @@ void get_flags(int argc, char**argv){
     for(int i = 1; i < argc - 2; i++){
         char* item = argv[i];
         int opt_len = strlen(item);
+
+        if(strcmp(item, "--help") == 0){
+            help();
+        }
 
         //flags start with - 
         if(item[0] != '-'){
@@ -623,6 +637,9 @@ void get_flags(int argc, char**argv){
 
 int main(int argc, char** argv){
     if(argc < 3){
+        if(argc == 2 && strcmp(argv[1], "--help") == 0){
+           help(); 
+        }
         printf("Error: Invalid arguement count\n");
         printf("Default Usage: ./glstri input_file output_file\n");
         return 4;
